@@ -1,0 +1,288 @@
+#' Perform Bayesian Statistical Interval Calculations
+#'
+#' This function coordinates the calculation of various statistical intervals including
+#' predicted distributions, credible intervals, tolerance intervals, and prediction intervals.
+#'
+#' @param data A data frame containing the input data
+#' @param fixed_effects Character vector of column names for fixed effects
+#' @param random_params Character vector of column names for random parameters
+#' @param by Character, name of the column to group by (default = "Single Chain Dataset")
+#' @param tolerance_interval_level Numeric, tolerance interval level percentage (between 0 and 100)
+#' @param multiplication_factor Numeric, factor to multiply random parameters variance by (default = 1)
+#' @param credible_interval_level Numeric, percentage for credible intervals (default = 95)
+#' @param prediction_interval_level Numeric, percentage for prediction intervals (default = 90)
+#' @param credibility_of_tolerance_interval Numeric, credibility level for tolerance intervals (default = 95)
+#' @param log_normal Logical, whether to transform results from log space (default = FALSE)
+#' @param covariate_cols Character vector of column names for covariates (default = NULL)
+#' @param covariate_values Numeric vector of values to multiply with covariates (default = NULL)
+#' @param use_krishnamoorthy Logical, whether to calculate two-sided tolerance intervals using
+#'        the Krishnamoorthy method (default = FALSE)
+#' @param krishnamoorthy_tolerance Numeric, convergence tolerance for Krishnamoorthy method (default = 0.01)
+#'
+#' @return A list containing:
+#' \itemize{
+#' \item data: A data frame with calculated intervals and reducible imprecision metrics
+#' \item summary: A string summarizing the calculation parameters
+#' \item krishnamoorthy_results: If use_krishnamoorthy=TRUE, a list of Krishnamoorthy method results
+#' }
+#'
+#' @details
+#' When \code{use_krishnamoorthy=TRUE}, the function adds two additional columns to the output data:
+#' \itemize{
+#' \item K_TI_Lower: Lower tolerance interval bound calculated using Krishnamoorthy method
+#' \item K_TI_Upper: Upper tolerance interval bound calculated using Krishnamoorthy method
+#' }
+#'
+#' The Krishnamoorthy method provides an alternative approach to calculating two-sided tolerance
+#' intervals that may be more appropriate in some situations, particularly when the distribution
+#' of lower and upper quantiles is not symmetric. The method finds optimal points (g1, g2) that
+#' satisfy the constraint g2 = 2*gP_mean - g1, where gP_mean is the average midpoint of the
+#' lower and upper quantiles.
+#'
+#' @references
+#' Wolfinger RD (1998). Tolerance intervals for variance component models using
+#' Bayesian simulation. \emph{Journal of Quality Technology}, 30(1).
+#'
+#' Krishnamoorthy K, Mathew T (2009). \emph{Statistical Tolerance Regions: Theory,
+#' Applications, and Computation}. Wiley, Hoboken, NJ. \doi{10.1002/9780470473900}.
+#'
+#' @examples
+#' set.seed(1)
+#' mcmc <- data.frame(
+#'   Group = rep(c("A", "B"), each = 50),
+#'   beta = c(rnorm(50, 10, 0.5), rnorm(50, 12, 0.5)),
+#'   sigma2 = rgamma(100, shape = 20, rate = 10),
+#'   age = rnorm(100, 50, 5)
+#' )
+#'
+#' res <- bayesian_statistical_intervals(
+#'   mcmc, fixed_effects = "beta", random_params = "sigma2",
+#'   by = "Group", tolerance_interval_level = 90
+#' )
+#' res$data
+#' res$summary
+#'
+#' # With a covariate and the Krishnamoorthy two-sided tolerance interval
+#' res_k <- bayesian_statistical_intervals(
+#'   mcmc, fixed_effects = "beta", random_params = "sigma2", by = "Group",
+#'   tolerance_interval_level = 90, credibility_of_tolerance_interval = 80,
+#'   covariate_cols = "age", covariate_values = 0.1, use_krishnamoorthy = TRUE
+#' )
+#' res_k$data
+#'
+#' @export
+bayesian_statistical_intervals <- function(data,
+                                           fixed_effects,
+                                           random_params,
+                                           by = "Single Chain Dataset",
+                                           tolerance_interval_level,
+                                           multiplication_factor = 1,
+                                           credible_interval_level = 95,
+                                           prediction_interval_level = 90,
+                                           credibility_of_tolerance_interval = 95,
+                                           log_normal = FALSE,
+                                           covariate_cols = NULL,
+                                           covariate_values = NULL,
+                                           use_krishnamoorthy = FALSE,
+                                           krishnamoorthy_tolerance = 0.01) {
+
+  # Input validation
+  if (!is.data.frame(data)) {
+    stop("'data' must be a data frame")
+  }
+  if (missing(tolerance_interval_level)) {
+    stop("'tolerance_interval_level' is required", call. = FALSE)
+  }
+  if (missing(fixed_effects) || !is.character(fixed_effects) || length(fixed_effects) == 0) {
+    stop("'fixed_effects' must be a character vector of column names", call. = FALSE)
+  }
+  if (missing(random_params) || !is.character(random_params) || length(random_params) == 0) {
+    stop("'random_params' must be a character vector of column names", call. = FALSE)
+  }
+  if (!is.character(by) || length(by) != 1) {
+    stop("'by' must be a single column name", call. = FALSE)
+  }
+  check_level(tolerance_interval_level, "tolerance_interval_level")
+  check_level(credible_interval_level, "credible_interval_level")
+  check_level(prediction_interval_level, "prediction_interval_level")
+  check_level(credibility_of_tolerance_interval, "credibility_of_tolerance_interval")
+  check_positive(multiplication_factor, "multiplication_factor")
+  check_flag(log_normal, "log_normal")
+  check_flag(use_krishnamoorthy, "use_krishnamoorthy")
+  check_positive(krishnamoorthy_tolerance, "krishnamoorthy_tolerance")
+  if (!is.null(covariate_cols)) {
+    if (!is.character(covariate_cols)) {
+      stop("'covariate_cols' must be a character vector of column names", call. = FALSE)
+    }
+    if (is.null(covariate_values)) {
+      covariate_values <- rep(1, length(covariate_cols))
+    }
+    if (!is.numeric(covariate_values) || any(!is.finite(covariate_values))) {
+      stop("'covariate_values' must be numeric and finite", call. = FALSE)
+    }
+    if (length(covariate_values) != length(covariate_cols)) {
+      stop("Length of 'covariate_cols' must match length of 'covariate_values'", call. = FALSE)
+    }
+  }
+
+  # Tell the user when the default grouping is used (informational, not a problem)
+  if (missing(by)) {
+    message("As by value is not specified, default value \"Single Chain Dataset\" is used")
+  }
+
+  # Calculate predicted distributions
+  pred_dist <- calculate_predicted_distributions(
+    data = data,
+    fixed_effects = fixed_effects,
+    random_params = random_params,
+    by = by,
+    tolerance_level = tolerance_interval_level,
+    multiplication_factor = multiplication_factor,
+    covariate_cols = covariate_cols,
+    covariate_values = covariate_values
+  )
+
+  # Calculate CI
+  ci_result <- calculate_ci(
+    data = pred_dist,
+    ColToAggregate = "median",
+    PercentForCI = credible_interval_level,
+    ByColumn = "By"
+  )
+
+  # Calculate TI
+  ti_result <- calculate_tolerance_interval(
+    data = pred_dist,
+    LowerColToAggregate = "lower_quantile",
+    UpperColToAggregate = "upper_quantile",
+    ConfidenceLevel = credibility_of_tolerance_interval,
+    ByColumn = "By"
+  )
+
+  # Calculate PI
+  pi_result <- calculate_PI(
+    data = pred_dist,
+    percent_for_pi = prediction_interval_level
+  )
+
+  # Merge results
+  combined_result <- merge(merge(ci_result, ti_result, by = "By"), pi_result, by = "By")
+
+  # Ensure only one row per unique "By" value; warn if rows had to be dropped
+  combined_result <- keep_first_by_row(combined_result)
+
+  # Add reducible imprecision (rounded to 5 decimals). With log_normal = TRUE the
+  # ratio is recalculated on the original scale below, so do not warn twice.
+  combined_result <- add_reducible_imprecision(combined_result, warn = !log_normal)
+
+  # Initialize Krishnamoorthy results
+  krishnamoorthy_results <- NULL
+
+  # Apply Krishnamoorthy method if requested
+  if (use_krishnamoorthy) {
+    # Calculate gP_mean
+    gP_mean_vector <- calculate_gP_mean(pred_dist, tolerance_interval_level)
+
+    # Find optimal points
+    krishnamoorthy_results <- find_optimal_point(
+      scatter_data = pred_dist,
+      gP_mean_vector = gP_mean_vector,
+      gamma_actual = credibility_of_tolerance_interval,
+      tolerance = krishnamoorthy_tolerance
+    )
+
+    # Add Krishnamoorthy TI values as new columns
+    combined_result <- add_krishnamoorthy_ti(combined_result, krishnamoorthy_results)
+
+    # Store original Krishnamoorthy results for log-normal transformation if needed
+    original_krishnamoorthy <- krishnamoorthy_results
+  }
+
+  # Apply log-normal transformation if requested
+  if (log_normal) {
+    log_cols <- c("Median", "CI_Lower", "CI_Upper",
+                  "TI_Lower", "TI_Upper",
+                  "PI_Lower", "PI_Upper")
+    combined_result[log_cols] <- lapply(combined_result[log_cols], exp)
+
+    # Also transform Krishnamoorthy TI values if they exist
+    if (use_krishnamoorthy && "K_TI_Lower" %in% names(combined_result)) {
+      combined_result$K_TI_Lower <- exp(combined_result$K_TI_Lower)
+      combined_result$K_TI_Upper <- exp(combined_result$K_TI_Upper)
+
+      # Transform the stored Krishnamoorthy results
+      krishnamoorthy_results <- lapply(original_krishnamoorthy, function(result) {
+        if (!is.null(result$g1) && !is.null(result$g2)) {
+          result$g1 <- exp(result$g1)
+          result$g2 <- exp(result$g2)
+        }
+        return(result)
+      })
+    }
+
+    # Recalculate reducible imprecision after transformation
+    combined_result <- add_reducible_imprecision(combined_result)
+  }
+
+  # Create formula string
+  fixed_effects_str <- paste(fixed_effects, collapse = " + ")
+  random_effects_str <- paste(random_params, collapse = " + ")
+  mult_factor_str <- ifelse(multiplication_factor != 1,
+                            paste0(multiplication_factor, " * "),
+                            "")
+
+  # Build covariate string
+  covariate_str <- ""
+  if (!is.null(covariate_cols)) {
+    covariate_terms <- sapply(seq_along(covariate_cols), function(i) {
+      if (covariate_values[i] == 1) {
+        covariate_cols[i]
+      } else {
+        paste0(covariate_values[i], " * ", covariate_cols[i])
+      }
+    })
+    covariate_str <- paste(covariate_terms, collapse = " + ")
+  }
+
+  # Combine mean components
+  mean_components <- c()
+  if (covariate_str != "") mean_components <- c(mean_components, covariate_str)
+  if (fixed_effects_str != "") mean_components <- c(mean_components, fixed_effects_str)
+  mean_part <- paste(mean_components, collapse = " + ")
+
+  formula_str <- paste0(
+    "y ~ N(",
+    mean_part,
+    " , ",
+    mult_factor_str,
+    "(",
+    random_effects_str,
+    "))"
+  )
+
+  # Create summary string
+  summary_str <- paste0(
+    "For parameters ", formula_str, " and a ",
+    credible_interval_level, "% credible interval, ",
+    prediction_interval_level, "% prediction interval, ",
+    tolerance_interval_level, "% tolerance interval with ",
+    credibility_of_tolerance_interval, "% credibility of tolerance",
+    ifelse(log_normal, " (log-normal transformation applied)", ""),
+    ifelse(use_krishnamoorthy, " (Krishnamoorthy method applied for two-sided TI)", ""),
+    ", the following results have been reached."
+  )
+
+  # Create result list
+  result <- list(
+    data = combined_result,
+    summary = summary_str,
+    pred_dist = pred_dist
+  )
+
+  # Add Krishnamoorthy results if available
+  if (use_krishnamoorthy) {
+    result$krishnamoorthy_results <- krishnamoorthy_results
+  }
+
+  return(result)
+}

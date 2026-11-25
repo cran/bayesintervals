@@ -1,0 +1,43 @@
+Package: bayesintervals
+Title: Reducible Imprecision and Bayesian Intervals for Mixed Models
+Version: 3.0.0
+Authors@R: 
+    c(person("Ekin", "Ören", , "ekin.oren.3@gmail.com", role = c("aut", "cre")),
+      person("Sebastian", "Schmitz", role = "aut"),
+      person("Sanofi", role = c("cph", "fnd")))
+Description: Calculates and visualizes Bayesian credible, prediction and
+    tolerance intervals, and posterior predictive distributions, for linear
+    mixed models from Markov chain Monte Carlo (MCMC) samples of the model
+    parameters. Users define the model through fixed effects, variance
+    components and optional covariates, and results can be back-transformed
+    from the log scale. Tolerance intervals are derived from the posterior
+    predictive distribution following Krishnamoorthy and Mathew (2009)
+    <doi:10.1002/9780470473900>, including the construction of one-dimensional
+    two-sided intervals from the bivariate posterior of the lower and upper
+    quantiles. Reducible imprecision measures the share of the
+    tolerance-interval half-width that exceeds the prediction-interval
+    half-width, that is, the epistemic uncertainty that more data could
+    reduce. The package includes an interactive 'shiny' application, started
+    with start_app_view(), which has its own name: 'BSI' (Bayesian
+    Statistical Intervals). The development repository on 'GitHub' is called
+    'BayesianSI.Calculator'.
+License: Apache License (== 2.0)
+URL: https://sanofi-public.github.io/BayesianSI.Calculator/,
+        https://github.com/Sanofi-Public/BayesianSI.Calculator
+BugReports: https://github.com/Sanofi-Public/BayesianSI.Calculator/issues
+Encoding: UTF-8
+Language: en-US
+Imports: shiny, DT, bslib, later, dplyr, readr, data.table, ggplot2,
+        plotly, stats, utils, grDevices
+Depends: R (>= 4.1.0)
+Suggests: testthat
+LazyData: true
+Config/roxygen2/version: 8.1.1
+NeedsCompilation: no
+Packaged: 2026-11-03 16:36:17 UTC; U1136032
+Author: Ekin Ören [aut, cre],
+  Sebastian Schmitz [aut],
+  Sanofi [cph, fnd]
+Maintainer: Ekin Ören <ekin.oren.3@gmail.com>
+Repository: CRAN
+Date/Publication: 2026-11-25 20:20:08 UTC

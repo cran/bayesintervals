@@ -1,0 +1,61 @@
+
+#' Calculate Gamma Difference for Krishnamoorthy Method
+#'
+#' This function calculates the difference between the target gamma (confidence level)
+#' and the actual gamma achieved for a given set of points. For a candidate
+#' interval (g1, g2) = (x, 2 * gP_mean - x), the achieved gamma is the percentage of
+#' draws whose own interval lies inside it, that is with `lower_quantile >= g1` and
+#' `upper_quantile <= g2`.
+#'
+#' @param scatter_data A data frame containing at least the following columns:
+#' \itemize{
+#'   \item By: A grouping variable
+#'   \item lower_quantile: Lower quantile values
+#'   \item upper_quantile: Upper quantile values
+#' }
+#' @param gP_mean Numeric, the gP_mean value for the By group
+#' @param point_x_vector Numeric, the x-coordinate(s) to evaluate
+#' @param gamma_actual Numeric, the target gamma (confidence level) percentage
+#'
+#' @return A list containing:
+#' \itemize{
+#'   \item gamma_differences: Differences between target and achieved gamma
+#'   \item points_satisfying: Number of points satisfying the condition
+#'   \item total_points: Total number of points evaluated
+#' }
+#'
+#' @references
+#' Krishnamoorthy K, Mathew T (2009). \emph{Statistical Tolerance Regions: Theory,
+#' Applications, and Computation}. Wiley, Hoboken, NJ. \doi{10.1002/9780470473900}.
+#'
+#' @examples
+#' data <- data.frame(
+#'   By = rep("A", 4),
+#'   lower_quantile = c(-2, -1, -3, -2),
+#'   upper_quantile = c(2, 3, 1, 2)
+#' )
+#' calculate_gamma_difference(data, gP_mean = 0.5, point_x_vector = c(-2, -1.5, -1),
+#'                            gamma_actual = 95)
+#'
+#' @export
+calculate_gamma_difference <- function(scatter_data, gP_mean, point_x_vector, gamma_actual) {
+  # Vectorized calculations
+  point_y_vector <- 2 * gP_mean - point_x_vector
+  total_points <- nrow(scatter_data)
+
+  # Create a matrix of conditions
+  conditions <- outer(scatter_data$upper_quantile, point_y_vector, "<=") &
+    outer(scatter_data$lower_quantile, point_x_vector, ">=")
+
+  # Sum the conditions for each point_x
+  points_satisfying <- colSums(conditions)
+
+  gamma_for_points <- (points_satisfying / total_points) * 100
+  gamma_differences <- gamma_actual - gamma_for_points
+
+  return(list(
+    gamma_differences = gamma_differences,
+    points_satisfying = points_satisfying,
+    total_points = total_points
+  ))
+}
